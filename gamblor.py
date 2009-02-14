@@ -3,6 +3,14 @@ import time
 import dacp
 
 
+q = dacp.ITunesController()
+
+q.open()
+print q.mlid
+q.next_item()
+q.close()
+
+'''
 q = dacp.DACPService(name='Kalle')
 
 print "pair:", q.pair
@@ -21,10 +29,4 @@ print
 
 q.respond(c, dacp.IS_VALID)
 q.close()
-
-
-q = dacp.ITunesController(host=c.host, port=c.port, guid=guid)
-q.open()
-
-if q.is_alive():
-	q.next_song()
+'''

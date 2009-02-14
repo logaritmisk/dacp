@@ -4,8 +4,11 @@ import string
 import urlparse
 import struct
 import httplib
+import urllib
 
 import pybonjour
+
+import decode
 
 
 ITUNES_PAIR_STRING_LENGTH = 64
@@ -124,21 +127,26 @@ class DACPService:
 
 
 class DACPConnection:
-	def __init__(self, **kwars):
+	def __init__(self, **kwargs):
 		self.host = kwargs.get('host', 'localhost')
 		self.port = kwargs.get('port', ITUNES_DACP_PORT)
+		self.mlid = None
 		
 		self.__connection = None
 	
 	
 	def _login(self):
-		pass
+		self.__connection.request("GET", "/login?pairing-guid=0x{guid}".format(guid='4c64570d727bd43d'), None, {'Viewer-Only-Client': '1'})
+		raw = self.__connection.getresponse().read()
+		self.mlid = decode.decode(list(raw), len(raw))['mlog']['mlid']
 	
 	
 	def open(self):
 		self.close()
 		
-		self.__connection = httplib.HTTPConnection(self.host, self.port)
+		self.__connection = httplib.HTTPConnection(self.host, self.port, False)
+		
+		self._login()
 	
 	def close(self):
 		if self.__connection:
@@ -146,17 +154,21 @@ class DACPConnection:
 			self.__connection = None
 	
 	
-	def send(self):
-		pass
+	def send(self, cmd, kwargs):
+		kwargs['session-id'] = self.mlid
+		
+		self.__connection.request("GET", "{cmd}?{args}".format(cmd=cmd, args=urllib.urlencode(kwargs)), None, {'Viewer-Only-Client': '1'})
+		raw = self.__connection.getresponse().read()
+		return decode.decode(list(raw), len(raw))
 	
 
 
 class ITunesController(DACPConnection):
-	def __init__(self, *kwargs):
+	def __init__(self, **kwargs):
 		DACPConnection.__init__(self, **kwargs)
 	
 	
-	def next_song(self):
-		pass
+	def next_item(self):
+		self.send('/ctrl-int/1/nextitem', {})
 	
 

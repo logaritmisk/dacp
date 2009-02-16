@@ -1,32 +1,34 @@
-import time
-
 import dacp
 
 
-q = dacp.ITunesController()
+d = dacp.DACPServiceDevice(name='Ristorante')
+d.register()
 
-q.open()
-print q.mlid
-q.next_item()
-q.close()
+print d.guid
+
+c = d.accept()
+print c
+d.respond(c, dacp.KEY_VALID)
+
+d.close()
 
 '''
-q = dacp.DACPService(name='Kalle')
+p = dacp.DACPServiceLibrary(name='Nisse Hult')
+p.register()
 
-print "pair:", q.pair
-print "guid:", q.guid
-print
+q = dacp.DACPBrowseLibrary(regtype='_touch-able._tcp')
+q.register()
 
-q.open()
-c = q.accept()
+for i in xrange(10):
+	q.update()
 
-print "addr:", c.addr
-print "code:", c.code
-print "name:", c.name
-print
+for k, v in q.librarys():
+	print 'id:', k
+	print 'name:', v['name']
+	print 'addr:', v['addr']
+	print
 
-#time.sleep(2.5)
-
-q.respond(c, dacp.IS_VALID)
+p.close()
 q.close()
 '''
+

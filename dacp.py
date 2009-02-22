@@ -1,35 +1,35 @@
-import random
 import select
+import random
 import socket
-import string
 import urlparse
+import string
 import struct
+import re
+import httplib
+import urllib
 
 import pybonjour
 
 
-BONJOUR_LIBRARY_NAME = 'Gamblor'
-BONJOUR_LIBRARY_TYPE = '_touch-able._tcp'
-BONJOUR_LIBRARY_PORT = 3689
-BONJOUR_LIBRARY_ID_LENGTH = 64
+DNS_REMOTE_NAME = 'Pinchy'
+DNS_REMOTE_TYPE = '_touch-remote._tcp'
+DNS_REMOTE_PORT = 1024
+DNS_REMOTE_PAIR_LENGTH = 64
+DNS_REMOTE_GUID_LENGTH = 64
 
-BONJOUR_DEVICE_NAME = 'Pinchy'
-BONJOUR_DEVICE_TYPE = '_touch-remote._tcp'
-BONJOUR_DEVICE_PORT = 1024
-BONJOUR_DEVICE_PAIR_LENGTH = 64
-BONJOUR_DEVICE_GUID_LENGTH = 64
+DNS_TOUCHABLE_NAME = 'Gamblor'
+DNS_TOUCHABLE_TYPE = '_touch-able._tcp'
+DNS_TOUCHABLE_PORT = 3689
+DNS_TOUCHABLE_ID_LENGTH = 64
+
+PAIR_VALID = 0x01
+PAIR_INVALID = 0x02
 
 
-KEY_VALID = 0x01
-KEY_INVALID = 0x02
-
-
-def read_list(queue, size):
+def read(queue, size):
     p, queue[0:size] = ''.join(queue[0:size]), []
     return p
 
-def generate_hex_string(bits):
-    return hex(random.getrandbits(bits))[2:-1]
 
 def encode_txt_record(record):
     return ''.join(['{0}{1}'.format(chr(len(i)), i) for i in map('{0[0]}={0[1]}'.format, record.iteritems())])
@@ -39,9 +39,14 @@ def decode_txt_record(record):
     d = {}
     
     while q:
-        d.update([read_list(q, ord(read_list(q, 1))).split('=', 1)])
+        d.update([read(q, ord(read(q, 1))).split('=', 1)])
     
     return d
+
+
+def generate_hex_string(bits):
+    return hex(random.getrandbits(bits))[2:-1]
+
 
 def parse_http_request(request):
     data = request.split('\r\n')
@@ -59,13 +64,56 @@ def parse_http_request(request):
     return command, path, version, headers, data
 
 
+def encode_msg(msg):
+    encoded = ''.join([('%s%s%s' % (key, struct.pack('>i', len(value)), value)) for key, value in msg.iteritems()])
+    
+    return '%s%s' % (struct.pack('>i', len(encoded)), encoded)
 
-class BonjourService:
+def decode_msg(msg, handle=None):
+    if not handle:
+        handle = len(msg)
+    
+    group = ['cmst','mlog','agal','mlcl','mshl','mlit','abro','abar','apso','caci','avdb','cmgt','aply','adbs','cmpa']
+    binary = re.compile('[^\x20-\x7e]')
+    
+    raw = list(msg)
+    data = {}
+    while handle >= 8:
+        # read word data type and length
+        ptype = read(raw, 4)
+        plen = struct.unpack('>I', read(raw, 4))[0]
+        handle -= 8 + plen
+        
+        # recurse into groups
+        if ptype in group:
+            data[ptype] = decode_msg(raw, plen)
+            continue
+        
+        # read and parse data
+        pdata = read(raw, plen)
+        
+        nice = ''.join(["%02x" % ord(c) for c in pdata])
+        if plen == 1: nice = struct.unpack('>B', pdata)[0]
+        if plen == 4: nice = struct.unpack('>I', pdata)[0]
+        if plen == 8: nice = struct.unpack('>Q', pdata)[0]
+        
+        if binary.search(pdata) is None:
+            nice = pdata
+        
+        data[ptype] = nice
+    
+    return data
+
+
+
+class DNSService(object):
     def __init__(self, **kwargs):
+        self.timeout = kwargs.get('timeout', 5)
+        
         self.__name = kwargs.get('name')
-        self.__regtype = kwargs.get('regtype')
+        self.__type = kwargs.get('type')
         self.__port = kwargs.get('port')
-        self.__txt_record = kwargs.get('txt_record', {})
+        self.__record = kwargs.get('txt_record', {})
         
         self.__sdref = None
     
@@ -75,83 +123,191 @@ class BonjourService:
             self.close()
     
     
+    @property
+    def name(self):
+        return self.__name
+    
+    @property
+    def type(self):
+        return self.__type
+    
+    @property
+    def port(self):
+        return self.__port
+    
+    
     def register(self):
         self.close()
         
         self.__sdref = pybonjour.DNSServiceRegister(name=self.__name,
-                                                    regtype=self.__regtype,
+                                                    regtype=self.__type,
                                                     port=self.__port,
-                                                    txtRecord=encode_txt_record(self.__txt_record),
-                                                    callBack=self._callback)
+                                                    txtRecord=encode_txt_record(self.__record),
+                                                    callBack=self.__callback)
         
-        pybonjour.DNSServiceProcessResult(self.__sdref)
+        ready = select.select([self.__sdref], [], [], self.timeout)
+        if self.__sdref not in ready[0]:
+            self.close()
+        
+        else:
+            pybonjour.DNSServiceProcessResult(self.__sdref)
     
     def close(self):
         if self.__sdref:
             self.__sdref.close()
             self.__sdref = None
     
+    
+    def is_alive(self):
+        return bool(self.__sdref)
+    
 
-class BonjourBrowse:
+class DNSBrowser(object):
+    class Service(object):
+		def __init__(self):
+			self._name = None
+			self._type = None
+			self._domain = None
+			self._full_name = None
+			self._host_target = None
+			self._txt_record = None
+			self._rr_full_name = None
+			self._rr_type = None
+			self._rr_class = None
+			self._rr_data = None
+			self._rr_ttl = None
+		
+		
+		@property
+		def name(self):
+			return self._name
+		
+		@property
+		def type(self):
+			return self._type
+		
+		@property
+		def domain(self):
+			return self._domain
+		
+		@property
+		def full_name(self):
+			return self._full_name
+		
+		@property
+		def host_target(self):
+			return self._host_target
+		
+		@property
+		def txt_record(self):
+			return self._txt_record
+		
+		@property
+		def rr_full_name(self):
+			return self._rr_full_name
+		
+		@property
+		def rr_type(self):
+			return self._rr_type
+		
+		@property
+		def rr_class(self):
+			return self._rr_class
+		
+		@property
+		def rr_data(self):
+			return self._rr_data
+		
+		@property
+		def rr_ttl(self):
+			return self._rr_ttl
+		
+	
+	
     def __init__(self, **kwargs):
-        self.__regtype = kwargs.get('regtype')
-        self.__sdref = None
+        self.timeout = kwargs.get('timeout', 5)
         
-        self.timeout = 5
+        self.__type = kwargs.get('type')
+        
+        self.__service = None
+        self.__sdref = None
     
     
-    def _query_record_callback(self, sdref, flags, interfaceindex, error, fullname, rrtype, rrclass, rdata, ttl):
-        self.on_query(fullname, rrtype, rrclass, rdata, ttl)
+    def _callback_query(self, sdref, flags, interfaceindex, error, fullname, rrtype, rrclass, rdata, ttl):
+        self.__service._rr_full_name
+        self.__service._rr_type
+        self.__service._rr_class
+        self.__service._rr_data
+        self.__service._rr_ttl
     
-    def _resolve_callback(self, sdref, flags, interfaceindex, error, fullname, hosttarget, port, txtrecord):
+    def _callback_resolve(self, sdref, flags, interfaceindex, error, fullname, hosttarget, port, txtrecord):
         if error != pybonjour.kDNSServiceErr_NoError:
             return
         
-        if self.on_resolve(fullname, hosttarget, port, txtrecord):
-            sdref = pybonjour.DNSServiceQueryRecord(interfaceIndex=interfaceindex,
-                                                    fullname=hosttarget,
-                                                    rrtype=pybonjour.kDNSServiceType_A,
-                                                    callBack=self._query_record_callback)
-            
-            ready = select.select([sdref], [], [], 5)
-            if sdref not in ready[0]:
-                print 'Query record timed out'
-                return
+        self.__service._full_name = fullname
+        self.__service._host_target = hosttarget
+        self.__service._port = port
+        self.__service._txt_record = txtrecord
         
-            pybonjour.DNSServiceProcessResult(sdref)
-            sdref.close()
+        sdref = pybonjour.DNSServiceQueryRecord(interfaceIndex=interfaceindex,
+                                                fullname=hosttarget,
+                                                rrtype=pybonjour.kDNSServiceType_A,
+                                                callBack=self._callback_query)
+        
+        ready = select.select([sdref], [], [], 5)
+        if sdref not in ready[0]:
+            return
+        
+        pybonjour.DNSServiceProcessResult(sdref)
+        sdref.close()
     
-    def _browse_callback(self, sdref, flags, interfaceindex, error, servicename, regtype, replydomain):
+    def _callback_browse(self, sdref, flags, interfaceindex, error, servicename, regtype, replydomain):
         if error != pybonjour.kDNSServiceErr_NoError:
             self.close()
             return
         
-        if not (flags & pybonjour.kDNSServiceFlagsAdd):
-            print 'Service removed'
+        self.__service = self.__class__.Service()
+        
+        self.__service._name = servicename
+        self.__service._type = regtype
+        self.__service._domain = replydomain
+                
+        sdref = pybonjour.DNSServiceResolve(0,
+                                            interfaceindex,
+                                            servicename,
+                                            regtype,
+                                            replydomain,
+                                            self._callback_resolve)
+        
+        ready = select.select([sdref], [], [], 5)
+        if sdref not in ready[0]:
             return
         
-        if self.on_result(servicename, regtype, replydomain):
-            sdref = pybonjour.DNSServiceResolve(0,
-                                                interfaceindex,
-                                                servicename,
-                                                regtype,
-                                                replydomain,
-                                                self._resolve_callback)
-            
-            pybonjour.DNSServiceProcessResult(sdref)
-            sdref.close()
+        pybonjour.DNSServiceProcessResult(sdref)
+        sdref.close()
+        
+        if (flags & pybonjour.kDNSServiceFlagsAdd):
+            self.on_added(self.__service)
+        
+        else:
+			self.on_removed(self.__service)
     
     
     def register(self):
-        self.__sdref = pybonjour.DNSServiceBrowse(regtype=self.__regtype,
-                                                  callBack=self._browse_callback)
+        self.__sdref = pybonjour.DNSServiceBrowse(regtype=self.__type,
+                                                  callBack=self._callback_browse)
     
     def close(self):
         if self.__sdref:
             self.__sdref.close()
             self.__sdref = None
     
-    def update(self):
+    
+    def is_alive(self):
+        return bool(self.__sdref)
+    
+    
+    def process(self):
         if self.__sdref:
             ready = select.select([self.__sdref], [], [], self.timeout)
             if self.__sdref not in ready[0]:
@@ -161,133 +317,267 @@ class BonjourBrowse:
                 pybonjour.DNSServiceProcessResult(self.__sdref)
     
     
-    def on_result(self, *args, **kwargs):
-        return True
+    def on_added(self, service):
+        pass
     
-    def on_resolve(self, *args, **kwargs):
-        return True
+    def on_removed(self, service):
+		pass
+	
+
+
+class DACPRemoteService(DNSService):
+    def __init__(self, **kwargs):
+        self.__name = kwargs.get('name', '')
+        self.__port = kwargs.get('port', DNS_REMOTE_PORT)
+        self.__type = kwargs.get('type', 'iPod')
+        self.__pair = kwargs.get('pair', generate_hex_string(DNS_REMOTE_PAIR_LENGTH).upper())
+        
+        txt_record = {'RemV': '10000', 'RemN': 'Remote', 'txtvers': '1', 'DvNm': self.__name, 'DvTy': self.__type, 'Pair': self.__pair}
+        DNSService.__init__(self, name=DNS_REMOTE_NAME,
+                                  type=DNS_REMOTE_TYPE,
+                                  port=self.__port,
+                                  txt_record=txt_record)
     
-    def on_query(self, *args, **kwargs):
+    
+    @property
+    def remote_name(self):
+        return self.__name
+    
+    @property
+    def remote_port(self):
+        return self.__port
+    
+    @property
+    def remote_type(self):
+        return self.__type
+    
+    @property
+    def remote_pair(self):
+        return self.__pair
+    
+
+class DACPRemoteBrowser(DNSBrowser):
+    def __init__(self, **kwargs):
+        DNSBrowser.__init__(self, type=DNS_REMOTE_TYPE)
+		#data = decode_txt_record(txtrecord)
+		#ip = socket.inet_ntoa(rdata)
+    
+    
+    def on_added(self, service):
+        print 'added:', service.name
+    
+    def on_removed(self, service):
+        print 'removed:', service.name
+    
+
+
+class DACPRemoteServer(object):
+    class Request(object):
+        def __init__(self, host, name, code):
+            self.__host = host
+            self.__name = name
+            self.__code = code
+        
+        def __repr__(self):
+            return '<Request(host={0})>'.format(self.__host)
+        
+        
+        @property
+        def host(self):
+            return self.__addr
+        
+        @property
+        def name(self):
+            return self.__name
+        
+        @property
+        def code(self):
+            return self.__code
+        
+    
+    
+    def __init__(self, **kwargs):
+        self.__port = kwargs.get('port', DNS_REMOTE_PORT)
+        self.__guid = kwargs.get('guid', generate_hex_string(DNS_REMOTE_GUID_LENGTH).upper())
+        
+        self.__list = {}
+        self.__sock = None
+    
+    
+    def open(self):
+        self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.__sock.bind(('', self.__port))
+        self.__sock.listen(1)
+    
+    def close(self):
+        if self.__sock:
+            self.__sock.close()
+            self.__sock = None
+        
+        while self.__list:
+            self.__list.popitem()[1].close()
+    
+    
+    def request(self):
+        req = None
+        
+        if self.__sock:
+            sock, addr = self.__sock.accept()
+            
+            field = parse_http_request(sock.recv(512))
+            query = urlparse.parse_qs(urlparse.urlparse(field[1]).query)
+            
+            req = self.__class__.Request(addr, query['servicename'][0], query['pairingcode'][0])
+            
+            self.__list[req.name] = sock
+        
+        return req
+    
+    def respond(self, req, mode, **kwargs):
+        sock = self.__list.pop(req.name, None)
+        
+        if sock:
+            if mode is PAIR_VALID:
+                cmpg = ''.join([chr(int(kwargs.get('guid', self.__guid)[i:i + 2], 16)) for i in range(0, 16, 2)])
+                data = encode_msg({'cmpg': cmpg, 'cmnm': 'devicename', 'cmty': 'ipod'})
+                
+                sock.sendall('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\ncmpa{0}\r\n'.format(data))
+            
+            sock.close()
+    
+    
+    @property
+    def port(self):
+        return self.__port
+    
+    @property
+    def guid(self):
+        return self.__guid
+    
+
+class DACPRemoteConnection(object):
+    def __init__(self, **kwargs):
         pass
     
 
 
-class DACPClient:
-    def __init__(self, sock, addr, code, name):
-        self.addr = addr
-        self.code = code
-        self.name = name
-        self.sock = sock
-    
-    def __repr__(self):
-        return '<DACPClient({addr}, {code})>'.format(addr=self.addr, code=self.code)
-    
-
-
-class DACPServiceLibrary(BonjourService):
+class DACPTouchableService(DNSService):
     def __init__(self, **kwargs):
         txt_record = {'Ver': '131072', 'DvSv': '1905', 'OSsi': '0xD97F', 'txtvers': '1'}
         
         txt_record['CtlN'] = kwargs.get('name', '')
         txt_record['DvTy'] = kwargs.get('type', 'iTunes')
-        txt_record['DbId'] = kwargs.get('id', generate_hex_string(BONJOUR_LIBRARY_ID_LENGTH).upper())
+        txt_record['DbId'] = kwargs.get('id', generate_hex_string(DNS_LIBRARY_ID_LENGTH).upper())
         
-        BonjourService.__init__(self, name=BONJOUR_LIBRARY_NAME,
-                                      regtype=BONJOUR_LIBRARY_TYPE,
-                                      port= BONJOUR_LIBRARY_PORT,
-                                      txt_record=txt_record)
+        DNSService.__init__(self, name=DNS_TOUCHABLE_NAME,
+                                  type=DNS_TOUCHABLE_TYPE,
+                                  port= DNS_TOUCHABLE_PORT,
+                                  txt_record=txt_record)
     
 
-class DACPBrowseLibrary(BonjourBrowse):
+class DACPTouchableBrowser(DNSBrowser):
     def __init__(self, **kwargs):
-        BonjourBrowse.__init__(self, regtype=BONJOUR_LIBRARY_TYPE)
-        
-        self.__active = ''
-        self.__librarys = {}
+        DNSBrowser.__init__(self, type=DNS_TOUCHABLE_TYPE)
+		#data = decode_txt_record(txtrecord)
+		#ip = socket.inet_ntoa(rdata)
     
     
-    def on_result(self, *args, **kwargs):
-        return True
+    def on_added(self, service):
+        print 'added:', service.name
     
-    def on_resolve(self, fullname, hosttarget, port, txtrecord):
-        data = decode_txt_record(txtrecord)
-        if data['DbId'] not in self.__librarys:
-            self.__active = data['DbId']
-            self.__librarys[self.__active] = {'name': data['CtlN'], 'addr': ([], port)}
-        
-        return True
-    
-    def on_query(self, fullname, rrtype, rrclass, rdata, ttl):
-        ip = socket.inet_ntoa(rdata)
-        if ip not in self.__librarys[self.__active]['addr'][0]:
-            self.__librarys[self.__active]['addr'][0].append(ip)
-    
-    
-    def librarys(self):
-        return self.__librarys.items()
+    def on_removed(self, service):
+        print 'removed:', service.name
     
 
 
-class DACPServiceDevice(BonjourService):
-    def __init__(self, **kwargs):
-        self.__sock = None
+class DACPTouchableServer(object):
+    class Request(object):
+        def __init__(self):
+            pass
         
-        self.guid = kwargs.get('guid', generate_hex_string(BONJOUR_DEVICE_GUID_LENGTH))
+        def __repr__(self):
+            return ''
         
-        txt_record = {'RemV': '10000', 'RemN': 'Remote', 'txtvers': '1'}
-        
-        txt_record['DvNm'] = kwargs.get('name', '')
-        txt_record['DvTy'] = kwargs.get('type', 'iPod')
-        txt_record['Pair'] = kwargs.get('pair', generate_hex_string(BONJOUR_DEVICE_PAIR_LENGTH))
-        
-        BonjourService.__init__(self, name=BONJOUR_DEVICE_NAME,
-                                      regtype=BONJOUR_DEVICE_TYPE,
-                                      port= BONJOUR_DEVICE_PORT,
-                                      txt_record=txt_record)
     
     
-    def register(self):
-        BonjourService.register(self)
-        
-        self.__sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.__sock.bind(('', BONJOUR_DEVICE_PORT))
-        self.__sock.listen(1)
-    
-    def close(self):
-        BonjourService.close(self)
-        
-        if self.__sock:
-            self.__sock.close()
-            self.__sock = None
-    
-    
-    def accept(self):
-        if self.__sock:
-            sock, addr = self.__sock.accept()
-            query = urlparse.parse_qs(urlparse.urlparse(parse_http_request(sock.recv(512))[1]).query)
-            
-            return DACPClient(sock, addr, query['pairingcode'][0], query['servicename'][0])
-        
-        return None
-    
-    def respond(self, client, mode):
-        if mode is KEY_VALID:
-            values = {'cmpg': ''.join([chr(int(self.guid[i:i + 2], 16)) for i in range(0, 16, 2)]), 'cmnm': 'devicename', 'cmty': 'ipod'}
-            encoded = ''
-            
-            for key, value in values.iteritems():
-                encoded += '%s%s%s' % (key, struct.pack('>i', len(value)), value)
-            
-            header = 'cmpa%s' % (struct.pack('>i', len(encoded)))
-            encoded = '%s%s' % (header, encoded)
-            
-            client.sock.sendall('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n{data}\r\n'.format(data=encoded))
-        
-        client.sock.close()
-    
-
-class DACPBrowseDevice(BonjourBrowse):
     def __init__(self, **kwargs):
         pass
+    
+    
+    def open(self):
+        pass
+    
+    def close(self):
+        pass
+    
+
+class DACPTouchableConnection(object):
+    def __init__(self, **kwargs):
+        self.__host = kwargs.get('host', 'localhost')
+        self.__port = kwargs.get('port', DNS_TOUCHABLE_PORT)
+        self.__guid = kwargs.get('guid', '')
+        
+        self.__conn = None
+        self.__mlid = None
+    
+    
+    def connect(self):
+        self.close()
+        
+        self.__conn = httplib.HTTPConnection(self.__host, self.__port, False)
+    
+    def close(self):
+        if self.__conn:
+            self.__conn.close()
+            self.__conn = None
+    
+    
+    def is_alive(self):
+        return bool(self.__conn)
+    
+    
+    def login(self, **kwargs):
+        guid = kwargs.get('guid', self.__guid)
+        
+        self.__conn.request("GET", "/login?pairing-guid=0x{0}".format(guid), None, {'Viewer-Only-Client': '1'})
+        
+        respond = self.__conn.getresponse()
+        if respond and respond.status == 200:
+            self.__mlid = decode_msg(list(respond.read()))['mlog']['mlid']
+            return True
+        
+        else:
+            self.close()
+            return False
+    
+    
+    def send(self, cmd, args):
+        args = '{0}&session-id={1}'.format(urllib.urlencode(args), self.__mlid)
+        
+        self.__conn.request("GET", "{0}?{1}".format(cmd, args), None, {'Viewer-Only-Client': '1'})
+        
+        respond = self.__conn.getresponse()
+        if respond and respond.status == 200:
+            return decode_msg(list(respond.read()))
+        
+        else:
+            return None
+    
+    
+    @property
+    def host(self):
+        return self.__host
+    
+    @property
+    def port(self):
+        return self.__port
+    
+    @property
+    def guid(self):
+        return self.__guid
+    
+    @property
+    def session_id(self):
+        return self.__mlid
     
 

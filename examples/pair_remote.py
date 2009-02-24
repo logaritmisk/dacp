@@ -16,7 +16,7 @@ try:
 		c = q.request()
 		q.respond(c, dacp.PAIR_VALID)
 		
-		print ' paired with:', c.addr[0]
+		print ' paired with: %s, %s' % c.host
 
 except KeyboardInterrupt:
 	print '^C for da win! Terminating this shit now...'

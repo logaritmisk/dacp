@@ -118,7 +118,7 @@ class DNSService(object):
         self.__sdref = None
     
     
-    def _callback(self, sdref, flags, error, name, regtype, domain):
+    def __callback(self, sdref, flags, error, name, regtype, domain):
         if error != pybonjour.kDNSServiceErr_NoError:
             self.close()
     
@@ -340,19 +340,19 @@ class DACPRemoteService(DNSService):
     
     
     @property
-    def remote_name(self):
+    def name(self):
         return self.__name
     
     @property
-    def remote_port(self):
+    def port(self):
         return self.__port
     
     @property
-    def remote_type(self):
+    def type(self):
         return self.__type
     
     @property
-    def remote_pair(self):
+    def pair(self):
         return self.__pair
     
 
@@ -384,7 +384,7 @@ class DACPRemoteServer(object):
         
         @property
         def host(self):
-            return self.__addr
+            return self.__host
         
         @property
         def name(self):

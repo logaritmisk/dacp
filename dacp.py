@@ -26,6 +26,9 @@ PAIR_VALID = 0x01
 PAIR_INVALID = 0x02
 
 
+RE_BINARY = re.compile('[^\x20-\x7e]')
+
+
 def read(queue, size):
     p, queue[0:size] = ''.join(queue[0:size]), []
     return p
@@ -69,40 +72,41 @@ def encode_msg(msg):
     
     return '%s%s' % (struct.pack('>i', len(encoded)), encoded)
 
-def decode_msg(msg, handle=None):
-    if not handle:
-        handle = len(msg)
-    
-    group = ['cmst','mlog','agal','mlcl','mshl','mlit','abro','abar','apso','caci','avdb','cmgt','aply','adbs','cmpa']
-    binary = re.compile('[^\x20-\x7e]')
-    
-    raw = list(msg)
-    data = {}
-    while handle >= 8:
-        # read word data type and length
-        ptype = read(raw, 4)
-        plen = struct.unpack('>I', read(raw, 4))[0]
-        handle -= 8 + plen
-        
-        # recurse into groups
-        if ptype in group:
-            data[ptype] = decode_msg(raw, plen)
-            continue
-        
-        # read and parse data
-        pdata = read(raw, plen)
-        
-        nice = ''.join(["%02x" % ord(c) for c in pdata])
-        if plen == 1: nice = struct.unpack('>B', pdata)[0]
-        if plen == 4: nice = struct.unpack('>I', pdata)[0]
-        if plen == 8: nice = struct.unpack('>Q', pdata)[0]
-        
-        if binary.search(pdata) is None:
-            nice = pdata
-        
-        data[ptype] = nice
-    
-    return data
+def decode_msg(raw):
+	def parse(raw):
+		while len(raw) >= 8:
+			ptype = read(raw, 4)
+			plen = struct.unpack('>I', read(raw, 4))[0]
+			pdata = read(raw, plen)
+			
+			if ptype in ['cmst','mlog','agal','mshl','mlit','abro','abar','apso','caci','avdb','cmgt','aply','adbs','cmpa']:
+				yield ptype, dict([[q, p] for q, p in parse(list(pdata))])
+				continue
+			
+			if ptype in ['mlcl']:
+				yield ptype, [dict([[q, p]]) for q, p in parse(list(pdata))]
+				continue
+			
+			if plen == 1: 
+				yield ptype, struct.unpack('>B', pdata)[0]
+				continue
+			
+			if plen == 4:
+				yield ptype, struct.unpack('>I', pdata)[0]
+				continue
+			
+			if plen == 8:
+				yield ptype, struct.unpack('>Q', pdata)[0]
+				continue
+			
+			if RE_BINARY.search(pdata) is None:
+				yield ptype, pdata
+				continue
+			
+			yield ptype, ''.join(['%02x' % ord(c) for c in pdata])
+	
+	
+	return dict([[q, p] for q, p in parse(list(raw))])
 
 
 
@@ -551,17 +555,18 @@ class DACPTouchableConnection(object):
             return False
     
     
-    def send(self, cmd, args):
-        args = '{0}&session-id={1}'.format(urllib.urlencode(args), self.__mlid)
-        
-        self.__conn.request("GET", "{0}?{1}".format(cmd, args), None, {'Viewer-Only-Client': '1'})
+    def send_raw(self, raw):
+        self.__conn.request('GET', '{0}&session-id={1}'.format(raw, self.__mlid), None, {'Viewer-Only-Client': '1'})
         
         respond = self.__conn.getresponse()
-        if respond and respond.status == 200:
-            return decode_msg(list(respond.read()))
-        
-        else:
-            return None
+        if respond:
+            if respond.status == 200:
+                return respond.read()
+            
+            return respond.status
+    
+    def send_cmd(self, cmd, args={}):
+        return self.send_raw('{0}?{1}'.format(cmd, urllib.urlencode(args)))
     
     
     @property

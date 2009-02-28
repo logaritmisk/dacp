@@ -26,7 +26,7 @@ PAIR_VALID = 0x01
 PAIR_INVALID = 0x02
 
 
-RE_BINARY = re.compile('[^\x20-\x7e]')
+#RE_BINARY = re.compile('[^\x20-\x7e]')
 
 
 def read(queue, size):
@@ -79,15 +79,21 @@ def decode_msg(raw):
 			plen = struct.unpack('>I', read(raw, 4))[0]
 			pdata = read(raw, plen)
 			
+			print ptype, plen, pdata
+			
 			if ptype in ['cmst','mlog','agal','mshl','mlit','abro','abar','apso','caci','avdb','cmgt','aply','adbs','cmpa']:
 				yield ptype, dict([[q, p] for q, p in parse(list(pdata))])
 				continue
 			
-			if ptype in ['mlcl']:
+			if ptype in ['mlcl','abal']:
 				yield ptype, [dict([[q, p]]) for q, p in parse(list(pdata))]
 				continue
 			
-			if plen == 1: 
+			if ptype in ['minm','asaa']:
+				yield ptype, pdata
+				continue
+			
+			if plen == 1:
 				yield ptype, struct.unpack('>B', pdata)[0]
 				continue
 			
@@ -99,15 +105,70 @@ def decode_msg(raw):
 				yield ptype, struct.unpack('>Q', pdata)[0]
 				continue
 			
-			if RE_BINARY.search(pdata) is None:
-				yield ptype, pdata
-				continue
+			#if RE_BINARY.search(pdata) is None:
+			#	yield ptype, pdata
+			#	continue
 			
-			yield ptype, ''.join(['%02x' % ord(c) for c in pdata])
+			yield ptype, pdata
+			#yield ptype, ''.join(['%02x' % ord(c) for c in pdata])
 	
 	
 	return dict([[q, p] for q, p in parse(list(raw))])
 
+
+
+class Parser:
+	def __init__(self, raw):
+		self._raw = raw
+	
+	
+	def nested(self, tag):
+		s = re.search(tag, self._raw)
+		
+		if not s: return None
+		
+		p = s.start()
+		l = struct.unpack('>I', self._raw[p + 4:p + 8])[0]
+		
+		return Parser(self._raw[p + 8:p + 8 + l])
+	
+	def array(self, tag):
+		q = []
+		for m in re.finditer(tag, self._raw):
+			p = m.start()
+			l = struct.unpack('>I', self._raw[p + 4:p + 8])[0]
+			q += [Parser(self._raw[p + 8:p + 8 + l])]
+		
+		return q
+	
+	
+	def string(self, tag):
+		s = re.search(tag, self._raw)
+		
+		if not s: return None
+		
+		p = s.start()
+		l = struct.unpack('>I', self._raw[p + 4:p + 8])[0]
+		
+		return self._raw[p + 8:p + 8 + l]
+	
+	def int(self, tag):
+		s = re.search(tag, self._raw)
+		
+		if not s: return None
+		
+		p = s.start()
+		l = struct.unpack('>I', self._raw[p + 4:p + 8])[0]
+		
+		return struct.unpack('>I', self._raw[p + 8:p + 8 + l])[0]
+	
+	
+	def as_string(self):
+		return self._raw
+	
+	def as_int(self):
+		return struct.unpack('>I', self._raw)[0]
+	
 
 
 class DNSService(object):
@@ -547,7 +608,7 @@ class DACPTouchableConnection(object):
         
         respond = self.__conn.getresponse()
         if respond and respond.status == 200:
-            self.__mlid = decode_msg(list(respond.read()))['mlog']['mlid']
+            self.__mlid = Parser(respond.read()).int('mlid')
             return True
         
         else:

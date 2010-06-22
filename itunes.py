@@ -19,7 +19,7 @@ class ITunesController(dacp.DACPTouchableConnection):
     
     def shuffle(self, value=None):
         if not value:
-            d = dacp.decode_msg(list(self.send('/ctrl-int/1/getproperty', {'properties': 'dacp.shufflestate'})))
+            d = dacp.decode_msg(list(self.send_cmd('/ctrl-int/1/getproperty', {'properties': 'dacp.shufflestate'})))
             return d['cmgt']['cash']
         
         if 0 <= value <= 1:
@@ -27,7 +27,7 @@ class ITunesController(dacp.DACPTouchableConnection):
     
     def repeat(self, value=None):
         if not value:
-            d = dacp.decode_msg(list(self.send('/ctrl-int/1/getproperty', {'properties': 'dacp.repeatstate'})))
+            d = dacp.decode_msg(list(self.send_cmd('/ctrl-int/1/getproperty', {'properties': 'dacp.repeatstate'})))
             return d['cmgt']['carp']
         
         if 0 <= value <= 2:
@@ -35,7 +35,7 @@ class ITunesController(dacp.DACPTouchableConnection):
     
     def volume(self, value=None):
         if not value:
-            d = dacp.decode_msg(list(self.send('/ctrl-int/1/getproperty', {'properties': 'dmcp.volume'})))
+            d = dacp.decode_msg(list(self.send_cmd('/ctrl-int/1/getproperty', {'properties': 'dmcp.volume'})))
             return d['cmgt']['cmvo']
         
         if 0.0 <= value <= 100.0:

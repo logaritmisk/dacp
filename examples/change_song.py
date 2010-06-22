@@ -1,10 +1,14 @@
+#!/usr/bin/env python
 import itunes
 
 
-q = itunes.ITunesController(host='192.168.1.3')
+q = itunes.ITunesController(host='localhost')
 q.connect()
 
-if q.login(guid='E551AC288AC81AD3'):
+if q.login(guid='95AAFD5039592871'):
 	q.next_item()
+
+else:
+	print('faild to connect to server...')
 
 q.close()

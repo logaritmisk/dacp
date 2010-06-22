@@ -578,9 +578,9 @@ class DACPTouchableConnection(object):
 		
 		self.__conn.request("GET", "/login?pairing-guid=0x{0}".format(guid), None, {'Viewer-Only-Client': '1'})
 		
-		respond = self.__conn.getresponse()
-		if respond and respond.status == 200:
-			self.__mlid = Parser(respond.read()).int('mlid')
+		response = self.__conn.getresponse()
+		if response and response.status == 200:
+			self.__mlid = Parser(response.read()).int('mlid')
 			return True
 		
 		else:
